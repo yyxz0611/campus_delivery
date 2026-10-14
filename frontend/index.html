@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>校园外卖配送对接平台</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+
+<body>
+  <div id="app" v-cloak>
+    <div v-if="!authed" class="login">
+      <div class="login-card">
+        <div class="login-logo">🛵</div>
+        <h2>校园外卖配送对接平台</h2>
+        <p class="login-sub">点对点可追溯 · 实名登录</p>
+        <div class="auth-tabs">
+          <button :class="{active: authMode==='login'}" @click="authMode='login'">登录</button>
+          <button :class="{active: authMode==='register'}" @click="authMode='register'">注册</button>
+        </div>
+        <div class="login-identity">
+          <input v-if="authMode==='register'" v-model="authForm.name" placeholder="姓名" />
+          <input v-model="authForm.phone" placeholder="手机号" />
+          <input v-if="authMode==='register'" v-model="authForm.email" placeholder="邮箱（用于找回密码）" />
+          <input v-model="authForm.password" type="password" placeholder="密码（6-12位字母数字）" />
+          <div v-if="authMode==='register'" class="role-pick">
+            <label v-for="r in signupRoles" :key="r.id" class="role-pick-item"
+              :class="{selected: authForm.role===r.id}">
+              <input type="radio" v-model="authForm.role" :value="r.id" />
+              <span>{{ r.name }}</span>
+            </label>
+          </div>
+          <button v-if="authMode==='login'" class="btn primary" @click="submitLogin">登录</button>
+          <button v-else class="btn primary" @click="submitRegister">注册</button>
+          <button v-if="authMode==='login'" class="link-btn" @click="openForgot">忘记密码？</button>
+        </div>
+      </div>
+
+      <div v-if="forgot.show" class="modal-mask">
+        <div class="modal">
+          <h3>找回密码</h3>
+          <div class="form-grid">
+            <label>邮箱<input v-model="forgot.email" placeholder="注册时绑定的邮箱" /></label>
+            <label>验证码
+              <div class="code-row">
+                <input v-model="forgot.code" placeholder="6位数字" />
+                <button class="btn" @click="sendForgotCode">发送验证码</button>
+              </div>
+            </label>
+            <label>重置身份
+              <select v-model="forgot.role">
+                <option v-for="r in signupRoles" :key="r.id" :value="r.id">{{ r.name }}</option>
+              </select>
+            </label>
+            <label>新密码<input v-model="forgot.password" type="password" placeholder="6-12位字母数字" /></label>
+          </div>
+          <div class="modal-actions">
+            <button class="btn" @click="closeForgot">取消</button>
+            <button class="btn primary" @click="submitResetPassword">重置密码</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <template v-else>
+      <aside class="sidebar">
+        <div class="logo">
+          <span class="logo-mark">🛵</span>
+          <div>
+            <div class="logo-title">校园外卖</div>
+            <div class="logo-sub">配送对接平台</div>
+          </div>
+        </div>
+        <nav>
+          <button v-for="t in visibleTabs" :key="t.id" class="nav-item" :class="{active: current===t.id}"
+            @click="switchTab(t.id)">
+            <span>{{ t.icon }}</span> {{ t.name }}
+          </button>
+        </nav>
+        <div class="cloud-status">
+          <div class="cloud-title">{{ me ? me.name : '' }} · {{ roleName(currentRole) }}</div>
+          <button class="btn" @click="logout" style="width:100%;margin-top:6px">退出</button>
+        </div>
+      </aside>
+
+      <main class="content">
+        <!-- 概览 -->
+        <section v-if="current==='dashboard'">
+          <h1>概览 · 实时态势</h1>
+          <div class="stat-cards">
+            <div class="stat">
+              <div class="stat-num">{{ stats.total }}</div>
+              <div class="stat-label">总订单</div>
+            </div>
+            <div class="stat">
+              <div class="stat-num">{{ stats.in_transit }}</div>
+              <div class="stat-label">配送中</div>
+            </div>
+            <div class="stat">
+              <div class="stat-num">{{ stats.delivered }}</div>
+              <div class="stat-label">已到寝</div>
+            </div>
+            <div class="stat">
+              <div class="stat-num" style="color:var(--danger)">{{ stats.abnormal }}</div>
+              <div class="stat-label">异常</div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-head">最近通知</div>
+            <div v-for="n in notifications" :key="n.ts" style="padding:8px 0;border-bottom:1px solid var(--border)">
+              <strong>{{ n.title }}</strong> <span class="mono">{{ n.ts }}</span>
+              <p class="hint">{{ n.content }}</p>
+            </div>
+            <p v-if="!notifications.length" class="hint">暂无通知</p>
+          </div>
+        </section>
+
+        <!-- 订单 -->
+        <section v-if="current==='orders'">
+          <h1>{{ currentRole==='student' ? '我的订单' : '外卖订单 · 批量管理' }}</h1>
+          <div class="toolbar">
+            <input v-model="orderFilter.keyword" placeholder="搜索订单号/姓名/楼栋/商家" @keyup.enter="loadOrders" />
+            <select v-model="orderFilter.status" @change="loadOrders">
+              <option value="">全部状态</option>
+              <option v-for="(v,k) in orderLabels" :key="k" :value="k">{{ v }}</option>
+            </select>
+            <button class="btn" @click="loadOrders">查询</button>
+            <button v-if="currentRole==='admin'" class="btn primary" @click="demoBatch">批量导入演示订单</button>
+            <button v-if="currentRole!=='student'" class="btn primary" @click="showCreate=true">手动录入订单</button>
+          </div>
+          <div class="panel">
+            <table>
+              <thead>
+                <tr>
+                  <th>订单号</th>
+                  <th>用餐人</th>
+                  <th>楼栋/寝室</th>
+                  <th>商家</th>
+                  <th v-if="currentRole==='admin'">来源</th>
+                  <th>状态</th>
+                  <th v-if="currentRole==='admin'">风险</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="o in orders" :key="o.id">
+                  <td class="mono">{{ o.order_no }}</td>
+                  <td>{{ o.customer_name }}</td>
+                  <td>{{ o.dorm_building }} {{ o.dorm_room }}</td>
+                  <td>{{ o.vendor_name }}</td>
+                  <td v-if="currentRole==='admin'"><span class="badge"
+                      :class="'src-'+(o.source==='manual'?'manual':'ocr')">{{
+                      o.source==='manual'?'手动':'OCR' }}</span></td>
+                  <td><span class="badge" :class="'st-'+o.status">{{ orderLabels[o.status] }}</span></td>
+                  <td v-if="currentRole==='admin'"><span class="badge" :class="'rk-'+o.risk.level"
+                      :title="o.risk.reasons.join('；')">{{ o.risk.label
+                      }}</span></td>
+                  <td>
+                    <button v-if="currentRole!=='student'" class="mini" @click="advanceOrder(o)">下一环节</button>
+                    <button v-if="currentRole!=='student'" class="mini" @click="reportLocation(o)"
+                      style="background:#efe">上报位置</button>
+                    <button class="mini" @click="viewOrder(o)" style="background:#eef">轨迹</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-if="showCreate" class="modal-mask">
+            <div class="modal">
+              <h3>手动录入订单</h3>
+              <p class="hint">手动录入的订单会标记为「手动」来源，并自动向学生发送核对通知。</p>
+              <div class="form-grid">
+                <label>订单号<input v-model="newOrder.order_no" /></label>
+                <label>用餐人<input v-model="newOrder.customer_name" /></label>
+                <label>楼栋<input v-model="newOrder.dorm_building" /></label>
+                <label>寝室号<input v-model="newOrder.dorm_room" /></label>
+                <label>商家<input v-model="newOrder.vendor_name" /></label>
+                <label>餐品<input v-model="newOrder.food_items" /></label>
+                <label>经度（定位失败手填）<input v-model="newOrder.longitude" placeholder="103.88" /></label>
+                <label>纬度（定位失败手填）<input v-model="newOrder.latitude" placeholder="30.78" /></label>
+              </div>
+              <div class="modal-actions">
+                <button class="btn" @click="showCreate=false">取消</button>
+                <button class="btn primary" @click="createOrder">保存</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 轨迹 -->
+        <section v-if="current==='tracking'">
+          <h1>配送轨迹 · 独有日志</h1>
+          <div class="toolbar">
+            <input v-model="trackOrderNo" placeholder="输入订单号检索轨迹" @keyup.enter="loadTrajectory" />
+            <button class="btn primary" @click="loadTrajectory">查询轨迹</button>
+            <span class="hint">含每个环节的时间戳、经纬度、配送员与照片</span>
+          </div>
+          <div v-if="trackLog.order" class="panel">
+            <div class="order-info">
+              <strong>{{ trackLog.order.order_no }}</strong>
+              <span>{{ trackLog.order.customer_name }} · {{ trackLog.order.dorm_building }} {{ trackLog.order.dorm_room
+                }}</span>
+              <span class="badge" :class="'st-'+trackLog.order.status">{{ orderLabels[trackLog.order.status] }}</span>
+            </div>
+            <div class="timeline">
+              <div v-for="(n,i) in trackLog.nodes" :key="n.id" class="tl-item">
+                <div class="tl-dot"></div>
+                <div class="tl-body">
+                  <div class="tl-head"><strong>{{ n.node_label }}</strong><span class="mono">{{ n.occurred_at }}</span>
+                  </div>
+                  <div class="tl-meta">配送员 {{ n.courier_name || '—' }} · 经纬度 ({{ n.longitude || '—' }}, {{ n.latitude ||
+                    '—' }})</div>
+                  <div v-if="n.note" class="tl-note">{{ n.note }}</div>
+                  <div v-if="n.photos.length" class="tl-photos">
+                    <span v-for="p in n.photos" :key="p.id" class="photo-chip" :class="'au-'+p.audit_status">
+                      📷 照片{{ p.audit_status==='passed'?'已审核通过':'已拒绝' }}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 照片审核 -->
+        <section v-if="current==='photos'">
+          <h1>关键节点照片上传与审核</h1>
+          <div class="panel">
+            <div class="toolbar">
+              <select v-model="photoOrderId">
+                <option :value="null">选择订单</option>
+                <option v-for="o in orders" :key="o.id" :value="o.id">{{ o.order_no }} - {{ o.customer_name }}</option>
+              </select>
+              <input type="file" accept="image/*" @change="onFilePick" />
+              <button class="btn primary" @click="uploadPhoto">上传并审核</button>
+            </div>
+            <div class="demo-btns">
+              <span>或者生成演示图验证审核：</span>
+              <button class="btn" @click="genDemo('normal')">正常图</button>
+              <button class="btn warn" @click="genDemo('black')">黑图</button>
+              <button class="btn warn" @click="genDemo('blurry')">模糊图</button>
+              <button class="btn warn" @click="genDemo('noise')">花图</button>
+            </div>
+          </div>
+          <div v-if="photoResult" class="panel">
+            <img v-if="photoPreview" :src="photoPreview" class="preview" />
+            <div class="audit-result" :class="'au-'+photoResult.audit_status">
+              <h3>审核结论：{{ photoResult.audit_status === 'passed' ? '✅ 通过' : '❌ 拒绝' }}</h3>
+              <p v-if="photoResult.reject_reason" class="reject">{{ photoResult.reject_reason }}</p>
+              <div class="metrics">
+                <span>亮度 {{ photoResult.audit_metrics.brightness }}</span>
+                <span>清晰度 {{ photoResult.audit_metrics.edge_variance }}</span>
+                <span>色彩度 {{ photoResult.audit_metrics.colorfulness }}</span>
+                <span>熵 {{ photoResult.audit_metrics.entropy }}</span>
+              </div>
+              <div class="metrics">
+                <span>黑图：{{ photoResult.audit_result.is_black?'是':'否' }}</span>
+                <span>花图：{{ photoResult.audit_result.is_flower_noise?'是':'否' }}</span>
+                <span>模糊：{{ photoResult.audit_result.is_blurry?'是':'否' }}</span>
+                <span>OCR：{{ photoResult.audit_result.ocr_mode }}</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 异常 -->
+        <section v-if="current==='anomalies'">
+          <h1>异常上报与处理</h1>
+          <div class="panel">
+            <div class="toolbar">
+              <select v-model="anomalyOrderId">
+                <option :value="null">选择订单</option>
+                <option v-for="o in orders" :key="o.id" :value="o.id">{{ o.order_no }} - {{ o.customer_name }}</option>
+              </select>
+              <select v-model="anomalyType">
+                <option value="lost">外卖丢失</option>
+                <option value="not_delivered">未配送到寝</option>
+              </select>
+              <input v-model="anomalyReporter" placeholder="上报人（默认当前姓名）" />
+              <button class="btn primary" @click="reportAnomaly">上报异常</button>
+              <button v-if="currentRole==='admin'" class="btn" @click="checkTimeouts">检查超时补偿</button>
+            </div>
+          </div>
+          <div v-for="a in anomalies" :key="a.id" class="panel anomaly-card">
+            <div class="anomaly-head">
+              <strong>#{{ a.id }}</strong>
+              <span class="badge red">{{ a.anomaly_type_label }}</span>
+              <span class="badge" :class="'an-'+a.status">{{ a.status_label }}</span>
+              <span class="mono">上报人 {{ a.reported_by }}（{{ roleName(a.reported_role) }}）</span>
+              <span class="mono">时间 {{ a.reported_at }}</span>
+            </div>
+            <div v-if="a.located_node_type" class="located">📍 已定位问题环节：{{ a.located_node_label }}</div>
+            <div v-if="a.compensation_granted" class="located">💰 已补偿 {{ a.compensation_amount }} 元 · {{ a.resolution }}
+            </div>
+            <div class="log-list">
+              <div v-for="(h,i) in a.handle_log" :key="i" class="log-item">
+                <span class="log-ts">{{ h.ts }}</span>
+                <strong>{{ h.action }}</strong> · {{ h.operator }}：{{ h.detail }}
+              </div>
+            </div>
+            <div v-if="currentRole==='admin'" class="anomaly-actions">
+              <button class="mini" @click="locateAnomaly(a)">定位环节</button>
+              <button class="mini" @click="handleAnomaly(a)">开始核查</button>
+              <button class="mini" @click="openContact(a,'rider')">联系骑手</button>
+              <button class="mini" @click="openContact(a,'student')">反馈学生</button>
+              <button class="mini warn" @click="compensateAnomaly(a)">触发补偿</button>
+              <button class="mini" @click="resolveAnomaly(a)">闭环解决</button>
+              <button class="mini" @click="viewAnomalyTrajectory(a)">查看轨迹</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 调度 -->
+        <section v-if="current==='dispatch'">
+          <h1>统筹调度 · 车次与人力</h1>
+          <div class="toolbar">
+            <button class="btn primary" @click="planDispatch">生成调度方案</button>
+            <span class="hint">仅纳入已交接（handover）及之后状态的订单，按楼栋聚合、车容量 40 单/车，贪心规划校内最优路线</span>
+          </div>
+          <div v-if="dispatch.plan" class="panel">
+            <div class="panel-head">已纳入 {{ dispatch.plan.total_orders }} 单已交接外卖，规划 {{ dispatch.plan.vehicle_count }} 车
+            </div>
+            <div id="map" style="width:100%;height:440px;"></div>
+          </div>
+          <div class="two-col">
+            <div class="panel">
+              <div class="panel-head">运输车车次（共 {{ dispatch.plan ? dispatch.plan.trips.length : 0 }} 车）</div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>车次</th>
+                    <th>运单量</th>
+                    <th>途经楼栋</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="t in (dispatch.plan?dispatch.plan.trips:[])" :key="t.trip_no">
+                    <td class="mono">{{ t.trip_no }}</td>
+                    <td>{{ t.load }}</td>
+                    <td>{{ t.buildings.join(' → ') }}</td>
+                    <td><button class="mini" @click="viewTripOrders(t)">查看订单</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="panel">
+              <div class="panel-head">宿舍楼下人力分配</div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>楼栋</th>
+                    <th>配送员</th>
+                    <th>单量</th>
+                    <th>时段</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="s in (dispatch.plan?dispatch.plan.staff:[])"
+                    :key="s.courier_name+s.dorm_building+s.order_count">
+                    <td>{{ s.dorm_building }}</td>
+                    <td>{{ s.courier_name }}</td>
+                    <td>{{ s.order_count }}</td>
+                    <td>{{ s.time_window }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div v-if="dispatch.tripOrders" class="modal-mask">
+            <div class="modal" style="width:680px">
+              <h3>车次 {{ dispatch.tripOrders.trip_no }} · 订单详情</h3>
+              <p class="hint">运单量 {{ dispatch.tripOrders.load }} · 途经 {{ dispatch.tripOrders.buildings.join(' → ') }}
+              </p>
+              <table>
+                <thead>
+                  <tr>
+                    <th>订单号</th>
+                    <th>用餐人</th>
+                    <th>楼栋/寝室</th>
+                    <th>商家</th>
+                    <th>状态</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="o in dispatch.tripOrders.orders" :key="o.id">
+                    <td class="mono">{{ o.order_no }}</td>
+                    <td>{{ o.customer_name }}</td>
+                    <td>{{ o.dorm_building }} {{ o.dorm_room }}</td>
+                    <td>{{ o.vendor_name }}</td>
+                    <td><span class="badge" :class="'st-'+o.status">{{ orderLabels[o.status] }}</span></td>
+                  </tr>
+                </tbody>
+              </table>
+              <div class="modal-actions">
+                <button class="btn" @click="dispatch.tripOrders=null">关闭</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 通知中心 -->
+        <section v-if="current==='notifications'">
+          <h1>通知中心</h1>
+          <div class="toolbar">
+            <button class="filter-btn" :class="{active: notificationFilter==='all'}"
+              @click="notificationFilter='all'">全部</button>
+            <button class="filter-btn" :class="{active: notificationFilter==='unread'}"
+              @click="notificationFilter='unread'">未读（{{ unreadCount }}）</button>
+            <button class="btn" @click="markAllRead">全部标为已读</button>
+            <button class="btn" @click="refreshNotifications">刷新</button>
+          </div>
+          <div class="panel">
+            <div v-for="n in filteredNotifications()" :key="n.id" class="notify-item" :class="{read: n.is_read}"
+              @click="markNotificationRead(n)">
+              <div class="notify-header">
+                <strong>{{ n.title }}</strong>
+                <div class="notify-actions">
+                  <span v-if="!n.is_read" class="badge red">未读</span>
+                  <span v-else class="badge" style="background:#f1f5f9">已读</span>
+                  <button class="mini warn" @click.stop="deleteNotification(n)">删除</button>
+                </div>
+              </div>
+              <p class="notify-content">{{ n.content }}</p>
+              <span class="mono notify-time">{{ n.ts }}</span>
+            </div>
+            <p v-if="!filteredNotifications().length" class="empty">暂无通知</p>
+          </div>
+        </section>
+
+
+        <!-- 人员管理 -->
+        <section v-if="current==='people'">
+          <h1>人员管理</h1>
+          <div class="toolbar">
+            <input v-model="people.keyword" placeholder="搜索姓名/手机号/邮箱" />
+            <button class="btn" @click="loadPeople">刷新</button>
+            <span class="hint">共 {{ filteredPeople().length }} 人</span>
+          </div>
+          <div class="panel">
+            <table>
+              <thead>
+                <tr>
+                  <th>姓名</th>
+                  <th>手机号</th>
+                  <th>邮箱</th>
+                  <th>角色</th>
+                  <th>余额</th>
+                  <th>注册时间</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="u in filteredPeople()" :key="u.id">
+                  <td>{{ u.name }}</td>
+                  <td class="mono">{{ u.phone }}</td>
+                  <td>{{ u.email || '—' }}</td>
+                  <td>
+                    <span v-for="r in u.roles" :key="r" class="badge role-badge">{{ roleName(r) }}</span>
+                  </td>
+                  <td>¥ {{ u.balance }}</td>
+                  <td class="mono">{{ u.created_at }}</td>
+                  <td>
+                    <button class="mini" @click="openUserDetail(u)">详情</button>
+                    <button v-if="!u.roles.includes('admin')" class="mini warn" @click="deleteUser(u)">注销</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div v-if="people.detail" class="modal-mask">
+            <div class="modal" style="width:620px">
+              <h3>用户详情</h3>
+              <div class="info-grid">
+                <div class="info-item"><span>姓名</span><strong>{{ people.detail.name }}</strong></div>
+                <div class="info-item"><span>手机号</span><strong>{{ people.detail.phone }}</strong></div>
+                <div class="info-item"><span>邮箱</span><strong>{{ people.detail.email || '未绑定' }}</strong></div>
+                <div class="info-item"><span>余额</span><strong>¥ {{ people.detail.balance }}</strong></div>
+              </div>
+              <div class="panel-head" style="margin-top:14px">已绑定身份</div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>角色</th>
+                    <th>绑定时间</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="c in people.detail.credentials" :key="c.role">
+                    <td><span class="badge">{{ roleName(c.role) }}</span></td>
+                    <td class="mono">{{ c.created_at }}</td>
+                    <td>
+                      <button v-if="c.role!=='admin'" class="mini warn" @click="removeUserRole(c.role)">解绑</button>
+                      <span v-else class="hint">内置</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <div class="panel-head" style="margin-top:14px">重置密码</div>
+              <div class="form-grid">
+                <label>选择角色
+                  <select v-model="people.resetRole">
+                    <option value="">请选择</option>
+                    <option v-for="c in people.detail.credentials" :key="c.role" :value="c.role">{{ roleName(c.role) }}
+                    </option>
+                  </select>
+                </label>
+                <label>新密码<input v-model="people.resetPwd" type="password" placeholder="6-12位字母数字" /></label>
+              </div>
+              <button class="btn primary" @click="adminResetPassword">重置密码</button>
+
+              <div class="panel-head" style="margin-top:14px">账户充值</div>
+              <div class="form-grid">
+                <label>充值金额<input v-model="people.rechargeAmount" type="number" placeholder="金额（元）" /></label>
+                <label>备注<input v-model="people.rechargeDesc" placeholder="选填" /></label>
+              </div>
+              <button class="btn primary" @click="adminRecharge">充值</button>
+
+              <div class="panel-head" style="margin-top:14px">关联订单（{{ people.orders.length }}）</div>
+              <table v-if="people.orders.length">
+                <thead>
+                  <tr>
+                    <th>订单号</th>
+                    <th>用餐人</th>
+                    <th>楼栋</th>
+                    <th>状态</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="o in people.orders" :key="o.id">
+                    <td class="mono">{{ o.order_no }}</td>
+                    <td>{{ o.customer_name }}</td>
+                    <td>{{ o.dorm_building }} {{ o.dorm_room }}</td>
+                    <td><span class="badge" :class="'st-'+o.status">{{ orderLabels[o.status] }}</span></td>
+                    <td><button class="mini" @click="viewUserOrderTrack(o.order_no)">轨迹</button></td>
+                  </tr>
+                </tbody>
+              </table>
+              <p v-else class="hint">暂无关联订单（订单需匹配该用户手机号或姓名，阶段4将接入 user_id 精确关联）</p>
+
+              <div class="modal-actions" style="margin-top:16px">
+                <button class="btn" @click="closeUserDetail">关闭</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 个人中心 -->
+        <section v-if="current==='profile'">
+          <h1>个人中心</h1>
+          <div class="two-col">
+            <div class="panel">
+              <div class="panel-head">基本信息</div>
+              <div class="info-grid">
+                <div class="info-item"><span>姓名</span><strong>{{ me.name }}</strong></div>
+                <div class="info-item"><span>手机号</span><strong>{{ me.phone }}</strong></div>
+                <div class="info-item"><span>当前身份</span><strong>{{ roleName(currentRole) }}</strong></div>
+                <div class="info-item"><span>绑定邮箱</span><strong>{{ me.email || '未绑定' }}</strong></div>
+                <div class="info-item"><span>账户余额</span><strong>¥ {{ me.balance != null ? me.balance : 0 }}</strong>
+                </div>
+              </div>
+            </div>
+            <div class="panel">
+              <div class="panel-head">修改密码（当前身份：{{ roleName(currentRole) }}）</div>
+              <div class="form-grid">
+                <label>旧密码<input v-model="profile.pw.old" type="password" /></label>
+                <label>新密码<input v-model="profile.pw.new1" type="password" placeholder="6-12位字母数字" /></label>
+                <label>确认新密码<input v-model="profile.pw.new2" type="password" /></label>
+              </div>
+              <button class="btn primary" @click="changePassword">修改密码</button>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">账户流水</div>
+            <div class="balance-summary">
+              <div class="balance-amount">当前余额：¥ {{ me.balance != null ? me.balance : 0 }}</div>
+            </div>
+            <table v-if="balance.transactions.length">
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>类型</th>
+                  <th>金额</th>
+                  <th>余额</th>
+                  <th>说明</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="t in balance.transactions" :key="t.id">
+                  <td class="mono">{{ t.created_at }}</td>
+                  <td><span class="badge">{{ t.type_label }}</span></td>
+                  <td :style="{color: t.amount >= 0 ? '#10b981' : '#e11d48'}">{{ t.amount >= 0 ? '+' : '' }}{{ t.amount
+                    }}</td>
+                  <td>¥ {{ t.balance_after }}</td>
+                  <td>{{ t.description }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <p v-else class="hint">暂无流水记录</p>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">修改个人信息</div>
+            <p class="hint">修改邮箱需填写邮箱验证码；需输入当前密码确认身份。</p>
+            <div class="form-grid">
+              <label>姓名<input v-model="profile.info.name" /></label>
+              <label>邮箱<input v-model="profile.info.email" /></label>
+              <label v-if="currentRole==='student'">楼栋<input v-model="profile.info.dorm_building"
+                  placeholder="如 梅园1栋" /></label>
+              <label v-if="currentRole==='student'">寝室号<input v-model="profile.info.dorm_room"
+                  placeholder="如 501" /></label>
+              <label>当前密码<input v-model="profile.info.password" type="password" /></label>
+              <label>邮箱验证码
+                <div class="code-row">
+                  <input v-model="profile.info.code" placeholder="6位数字" />
+                  <button class="btn" @click="sendProfileCode">发送验证码</button>
+                </div>
+              </label>
+            </div>
+            <button class="btn primary" @click="saveProfile">保存信息</button>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">切换身份（按密码）</div>
+            <p class="hint">同一手机号可注册多个身份，输入目标身份对应的密码即可切换视角。</p>
+            <div class="form-grid">
+              <label>目标身份密码<input v-model="profile.switch.password" type="password" /></label>
+            </div>
+            <button class="btn primary" @click="switchRoleByPwd">切换身份</button>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">注销账号</div>
+            <p class="hint">注销将删除你的所有身份和关联数据，不可恢复。请输入当前身份密码确认。</p>
+            <div class="form-grid">
+              <label>当前身份密码<input v-model="profile.del.password" type="password" /></label>
+            </div>
+            <button class="btn warn" @click="deleteAccount">注销账号</button>
+          </div>
+        </section>
+      </main>
+
+      <div v-if="gps.show" class="modal-mask">
+        <div class="modal gps-modal">
+          <h3>{{ gps.advance ? '推进环节 · 上报位置' : '上报骑手位置' }}</h3>
+          <p class="hint">{{ gps.order.order_no }} · {{ gps.order.customer_name }} · {{ gps.order.dorm_building }}
+            {{ gps.order.dorm_room }}</p>
+          <div id="gps-map" class="gps-map"></div>
+          <p class="hint">点击地图落点，或手动输入经纬度（HTTP 环境浏览器自动定位不可用）</p>
+          <div class="form-grid">
+            <label>经度<input v-model="gps.longitude" placeholder="103.88" /></label>
+            <label>纬度<input v-model="gps.latitude" placeholder="30.78" /></label>
+          </div>
+          <div class="modal-actions">
+            <button class="btn" @click="gpsUseBrowser">使用浏览器定位</button>
+            <button class="btn" @click="gpsCancel">取消</button>
+            <button class="btn primary" @click="gpsConfirm">{{ gps.advance ? '确认并推进' : '确认上报' }}</button>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="contactModal.show && contactModal.target" class="modal-mask">
+        <div class="modal" style="width:520px">
+          <h3>{{ contactModal.kind === 'rider' ? '联系骑手' : '反馈学生' }}</h3>
+          <p class="hint">订单 {{ contactModal.contacts && contactModal.contacts.order_no }} · 异常 #{{ contactModal.anomaly
+            && contactModal.anomaly.id }}</p>
+          <div class="info-grid">
+            <div class="info-item"><span>姓名</span><strong>{{ contactModal.target.name }}</strong></div>
+            <div class="info-item"><span>手机号</span><strong class="mono">{{ contactModal.target.phone }}</strong></div>
+            <div class="info-item"><span>邮箱</span><strong>{{ contactModal.target.email || '未绑定' }}</strong></div>
+          </div>
+          <div class="form-grid">
+            <label style="grid-column:1/-1">沟通内容<input v-model="contactModal.detail" /></label>
+          </div>
+          <div class="modal-actions">
+            <button class="btn" @click="closeContactModal">取消</button>
+            <button class="btn primary" @click="confirmContact">确认发送</button>
+          </div>
+        </div>
+      </div>
+    </template>
+  </div>
+
+  <script src="/vue.global.prod.js"></script>
+  <script>
+    window._AMapSecurityConfig = { securityJsCode: '74094a260f7df449781c1cf7f02dda24' };
+  </script>
+  <script src="https://webapi.amap.com/maps?v=2.0&key=5a038e31753a90399eaa5eecaea22552"></script>
+  <script src="/app.js"></script>
+</body>
+
+</html>

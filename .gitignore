@@ -1,0 +1,42 @@
+# 敏感配置（含华为云 AK/SK、数据库密码）
+.env
+
+# 数据库文件
+*.db
+*.db-journal
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# 测试缓存
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 上传的照片（保留 .gitkeep）
+static/uploads/*
+!static/uploads/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+
+# CodeArts 内部
+.arts/
+.codeartsdoer/
+.merkle-snapshot.json
+
+# 系统杂项
+nul
+.DS_Store
+Thumbs.db
