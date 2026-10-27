@@ -20,6 +20,7 @@ createApp({
         { id: 'anomalies', name: '异常应急', icon: '🚨' },
         { id: 'dispatch', name: '统筹调度', icon: '🚚' },
         { id: 'notifications', name: '通知中心', icon: '🔔' },
+        { id: 'assistant', name: 'AI 助手', icon: '🤖' },
         { id: 'profile', name: '个人中心', icon: '👤' },
       ],
       orderLabels,
@@ -31,6 +32,7 @@ createApp({
       orders: [],
       orderFilter: { keyword: '', status: '' },
       showCreate: false,
+      locating: false,
       newOrder: { order_no: '', customer_name: '', dorm_building: '', dorm_room: '', vendor_name: '', food_items: '', source: 'manual', longitude: '', latitude: '' },
 
       trackOrderNo: '',
@@ -61,9 +63,9 @@ createApp({
 
       currentRole: '',
       roles: [
-        { id: 'admin', name: '管理员', icon: '🏫', tip: '统筹调度 · 照片审核 · 异常处置', desc: '平台统筹视角：全程监控订单、照片审核、异常处置、车次与人力调度。', tabs: ['dashboard', 'people', 'orders', 'tracking', 'photos', 'anomalies', 'dispatch', 'notifications', 'profile'] },
-        { id: 'rider', name: '骑手', icon: '🛵', tip: '拍照上传 · 推进配送节点', desc: '骑手端：取餐 → 校外交接 → 到寝，每到一个关键节点拍照上传并推进状态，系统自动记录轨迹。', tabs: ['orders', 'tracking', 'photos', 'anomalies', 'notifications', 'profile'] },
-        { id: 'student', name: '学生', icon: '👨‍🎓', tip: '查轨迹 · 上报异常 · 接收反馈', desc: '学生端：查看自己的订单和配送轨迹、上报异常、接收处理反馈。', tabs: ['orders', 'tracking', 'anomalies', 'notifications', 'profile'] },
+        { id: 'admin', name: '管理员', icon: '🏫', tip: '统筹调度 · 照片审核 · 异常处置', desc: '平台统筹视角：全程监控订单、照片审核、异常处置、车次与人力调度。', tabs: ['dashboard', 'people', 'orders', 'tracking', 'photos', 'anomalies', 'dispatch', 'notifications', 'assistant', 'profile'] },
+        { id: 'rider', name: '骑手', icon: '🛵', tip: '拍照上传 · 推进配送节点', desc: '骑手端：取餐 → 校外交接 → 到寝，每到一个关键节点拍照上传并推进状态，系统自动记录轨迹。', tabs: ['orders', 'tracking', 'photos', 'anomalies', 'notifications', 'assistant', 'profile'] },
+        { id: 'student', name: '学生', icon: '👨‍🎓', tip: '查轨迹 · 上报异常 · 接收反馈', desc: '学生端：查看自己的订单和配送轨迹、上报异常、接收处理反馈。', tabs: ['orders', 'tracking', 'anomalies', 'notifications', 'assistant', 'profile'] },
       ],
 
       profile: {
@@ -85,10 +87,21 @@ createApp({
         rechargeDesc: '',
       },
       balance: { transactions: [] },
+
+      chat: { input: '', loading: false },
+      // 每个角色一条独立会话：切换角色时互不干扰
+      chats: {
+        admin: { thread_id: '', messages: [] },
+        rider: { thread_id: '', messages: [] },
+        student: { thread_id: '', messages: [] },
+      },
     };
   },
 
   computed: {
+    currentChat() {
+      return this.chats[this.currentRole] || this.chats.admin;
+    },
     visibleTabs() {
       const role = this.roles.find(r => r.id === this.currentRole);
       const tabs = this.tabs.filter(t => (role ? role.tabs : []).includes(t.id));
@@ -130,6 +143,51 @@ createApp({
       if (id === 'dispatch') this.drawMapSoon();
       if (id === 'profile') { this.initProfile(); this.loadTransactions(); }
       if (id === 'people') this.loadPeople();
+    },
+
+    ensureThreadId() {
+      const c = this.currentChat;
+      if (!c.thread_id) {
+        const uid = this.me && this.me.id ? this.me.id : 0;
+        c.thread_id = `${uid}_${this.currentRole}`;
+      }
+      return c.thread_id;
+    },
+
+    newChat() {
+      const c = this.currentChat;
+      const uid = this.me && this.me.id ? this.me.id : 0;
+      c.thread_id = `${uid}_${this.currentRole}_${Date.now()}`;
+      c.messages = [];
+      this.chat.input = '';
+    },
+
+    async sendChat() {
+      const text = this.chat.input.trim();
+      if (!text || this.chat.loading) return;
+      const c = this.currentChat;
+      const threadId = this.ensureThreadId();
+      c.messages.push({ role: 'user', content: text });
+      this.chat.input = '';
+      this.chat.loading = true;
+      this.scrollChat();
+      try {
+        const r = await this.api('POST', '/api/assistant/chat', { message: text, thread_id: threadId });
+        const reply = r && r.reply ? r.reply : (r && r.detail ? r.detail : '助手暂时无法响应，请稍后再试。');
+        if (r && r.thread_id) c.thread_id = r.thread_id;
+        c.messages.push({ role: 'assistant', content: reply });
+      } catch (e) {
+        c.messages.push({ role: 'assistant', content: '网络异常，请稍后再试。' });
+      }
+      this.chat.loading = false;
+      this.scrollChat();
+    },
+
+    scrollChat() {
+      this.$nextTick(() => {
+        const el = this.$refs.chatMessages;
+        if (el) el.scrollTop = el.scrollHeight;
+      });
     },
 
     async submitLogin() {
@@ -184,6 +242,13 @@ createApp({
       this.currentRole = '';
       this.authForm = { name: '', phone: '', email: '', password: '', role: 'rider' };
       this.authMode = 'login';
+      // 退出登录时清空各角色会话，避免下一位登录者看到上一位的对话
+      this.chats = {
+        admin: { thread_id: '', messages: [] },
+        rider: { thread_id: '', messages: [] },
+        student: { thread_id: '', messages: [] },
+      };
+      this.chat.input = '';
     },
 
     initProfile() {
@@ -356,18 +421,42 @@ createApp({
       const opt = { method, headers: {} };
       if (this.token) opt.headers['X-Auth-Token'] = this.token;
       if (body) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
-      const r = await fetch(url, opt);
-      return r.json();
+      let r;
+      try {
+        r = await fetch(url, opt);
+      } catch (e) {
+        return { detail: '网络请求失败，请确认服务正在运行' };
+      }
+      const text = await r.text();
+      let data = null;
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
+      if (r.ok) return data;
+      let detail = (data && data.detail) ? data.detail : null;
+      if (!detail) {
+        const snippet = (text || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+        detail = snippet
+          ? `服务异常（HTTP ${r.status}）：${snippet}`
+          : `请求失败（HTTP ${r.status} ${r.statusText}）`;
+      }
+      return { detail: detail, status: r.status };
     },
 
     getLocation() {
       return new Promise((resolve) => {
-        if (!navigator.geolocation) { resolve(null); return; }
-        navigator.geolocation.getCurrentPosition(
-          (pos) => resolve({ longitude: pos.coords.longitude, latitude: pos.coords.latitude }),
-          () => resolve(null),
-          { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 }
-        );
+        if (!navigator.geolocation || !navigator.geolocation.getCurrentPosition) { resolve(null); return; }
+        let done = false;
+        const finish = (v) => { if (!done) { done = true; resolve(v); } };
+        const timer = setTimeout(() => finish(null), 10000);
+        try {
+          navigator.geolocation.getCurrentPosition(
+            (pos) => { clearTimeout(timer); finish({ longitude: pos.coords.longitude, latitude: pos.coords.latitude }); },
+            () => { clearTimeout(timer); finish(null); },
+            { enableHighAccuracy: false, timeout: 6000, maximumAge: 30000 }
+          );
+        } catch (e) {
+          clearTimeout(timer);
+          finish(null);
+        }
       });
     },
 
@@ -420,19 +509,49 @@ createApp({
       this.notifications = this.notifications.filter(x => x.id !== n.id);
     },
 
-    async createOrder() {
+    openCreate() {
+      this.showCreate = true;
+      this.tryAutoLocate();
+    },
+
+    async tryAutoLocate() {
+      if (this.locating) return;
+      this.locating = true;
       const loc = await this.getLocation();
+      this.locating = false;
+      if (!this.showCreate) return;
+      if (loc) {
+        this.newOrder.longitude = Number(loc.longitude).toFixed(6);
+        this.newOrder.latitude = Number(loc.latitude).toFixed(6);
+      } else if (!String(this.newOrder.longitude || '').trim() && !String(this.newOrder.latitude || '').trim()) {
+        alert('自动定位不可用（HTTP 环境限制），请手动填写经纬度；不填也可以直接保存');
+      }
+    },
+
+    async createOrder() {
       const payload = { ...this.newOrder };
-      let lng = loc ? loc.longitude : parseFloat(this.newOrder.longitude);
-      let lat = loc ? loc.latitude : parseFloat(this.newOrder.latitude);
-      if (Number.isFinite(lng) && Number.isFinite(lat)) {
+      const rawLng = String(this.newOrder.longitude || '').trim();
+      const rawLat = String(this.newOrder.latitude || '').trim();
+      if (rawLng || rawLat) {
+        const lng = parseFloat(rawLng);
+        const lat = parseFloat(rawLat);
+        if (!Number.isFinite(lng) || !Number.isFinite(lat)) {
+          alert('经纬度格式不正确，请填写数字（如 103.88 / 30.78），或清空后直接保存');
+          return;
+        }
         payload.longitude = lng;
         payload.latitude = lat;
       } else {
         delete payload.longitude;
         delete payload.latitude;
       }
-      await this.api('POST', '/api/orders', payload);
+      try {
+        const res = await this.api('POST', '/api/orders', payload);
+        if (res && res.detail) { alert(res.detail); return; }
+      } catch (e) {
+        alert('保存失败：' + (e && e.message ? e.message : '网络或服务异常'));
+        return;
+      }
       this.showCreate = false;
       this.newOrder = { order_no: '', customer_name: '', dorm_building: '', dorm_room: '', vendor_name: '', food_items: '', source: 'manual', longitude: '', latitude: '' };
       this.loadOrders();

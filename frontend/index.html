@@ -127,7 +127,7 @@
             </select>
             <button class="btn" @click="loadOrders">查询</button>
             <button v-if="currentRole==='admin'" class="btn primary" @click="demoBatch">批量导入演示订单</button>
-            <button v-if="currentRole!=='student'" class="btn primary" @click="showCreate=true">手动录入订单</button>
+            <button v-if="currentRole!=='student'" class="btn primary" @click="openCreate()">手动录入订单</button>
           </div>
           <div class="panel">
             <table>
@@ -177,10 +177,12 @@
                 <label>寝室号<input v-model="newOrder.dorm_room" /></label>
                 <label>商家<input v-model="newOrder.vendor_name" /></label>
                 <label>餐品<input v-model="newOrder.food_items" /></label>
-                <label>经度（定位失败手填）<input v-model="newOrder.longitude" placeholder="103.88" /></label>
-                <label>纬度（定位失败手填）<input v-model="newOrder.latitude" placeholder="30.78" /></label>
+                <label>经度（可自动定位或手填）<input v-model="newOrder.longitude" placeholder="103.88" /></label>
+                <label>纬度（可自动定位或手填）<input v-model="newOrder.latitude" placeholder="30.78" /></label>
               </div>
               <div class="modal-actions">
+                <button class="btn" @click="tryAutoLocate" :disabled="locating">{{ locating ? '定位中…' : '尝试自动定位'
+                  }}</button>
                 <button class="btn" @click="showCreate=false">取消</button>
                 <button class="btn primary" @click="createOrder">保存</button>
               </div>
@@ -643,6 +645,39 @@
               <label>当前身份密码<input v-model="profile.del.password" type="password" /></label>
             </div>
             <button class="btn warn" @click="deleteAccount">注销账号</button>
+          </div>
+        </section>
+
+        <!-- AI 助手 -->
+        <section v-if="current==='assistant'" class="assistant-section">
+          <div class="assistant-head">
+            <div>
+              <h1>AI 助手 · 智能客服</h1>
+              <p class="hint">用自然语言描述问题，助手会自动调用平台能力帮你查单、上报异常、给相关方发通知。</p>
+            </div>
+            <div class="assistant-head-actions">
+              <span class="hint">{{ roleName(currentRole) }}专属会话</span>
+              <button class="btn" :disabled="chat.loading" @click="newChat">新建会话</button>
+            </div>
+          </div>
+          <div class="chat-box">
+            <div class="chat-messages" ref="chatMessages">
+              <div v-if="!currentChat.messages.length && !chat.loading" class="chat-empty">
+                <div class="chat-empty-icon">🤖</div>
+                <p>你好，我是校园外卖智能助手。</p>
+                <p class="hint">比如问我：「我的外卖还没送到，能帮我查查吗？」</p>
+              </div>
+              <div v-for="(m, idx) in currentChat.messages" :key="idx" class="chat-msg" :class="m.role">
+                <div class="chat-bubble">{{ m.content }}</div>
+              </div>
+              <div v-if="chat.loading" class="chat-msg assistant">
+                <div class="chat-bubble">正在思考...</div>
+              </div>
+            </div>
+            <div class="chat-input-row">
+              <input v-model="chat.input" @keyup.enter="sendChat" placeholder="输入你的问题，回车发送" :disabled="chat.loading" />
+              <button class="btn primary" :disabled="chat.loading" @click="sendChat">发送</button>
+            </div>
           </div>
         </section>
       </main>
