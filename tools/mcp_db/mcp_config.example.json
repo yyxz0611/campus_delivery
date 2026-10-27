@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "campus-db": {
+      "command": "python",
+      "args": [
+        "<仓库根目录>/tools/mcp_db/server.py"
+      ],
+      "env": {}
+    }
+  }
+}

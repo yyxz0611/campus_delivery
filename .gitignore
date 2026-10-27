@@ -31,12 +31,20 @@ static/uploads/*
 .vscode/
 .idea/
 
-# CodeArts 内部
+# CodeArts 内部（保留可公开的 AI 工程配置：AGENTS.md / skills）
 .arts/
-.codeartsdoer/
+.codeartsdoer/*
+!.codeartsdoer/AGENTS.md
+!.codeartsdoer/skills/
 .merkle-snapshot.json
 
 # 系统杂项
 nul
 .DS_Store
 Thumbs.db
+# 本地过程脚本与材料生成工具（不随代码发布）
+nav.txt
+scripts/append_ppt_3_0.py
+scripts/update_docx_3_0.py
+scripts/check_assistant.py
+scripts/check_minimax_tools.py
