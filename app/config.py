@@ -71,6 +71,14 @@ class Settings:
     smtp_password: str = _env("SMTP_PASSWORD", "cviyrdnsrbgkcibc")
     email_sender: str = _env("EMAIL_SENDER", "3338542316@qq.com")
 
+    # ---- MiniMax 大模型（3.0 多 Agent 助手）----
+    minimax_api_key: str = _env("MINIMAX_API_KEY", "")
+    minimax_base_url: str = _env("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1")
+    minimax_model: str = _env("MINIMAX_MODEL", "minimax-m3")
+    # MiniMax-M3 是推理型模型，思考链会吃掉 token 预算；上限太小会导致输出被截断
+    minimax_max_tokens: int = int(_env("MINIMAX_MAX_TOKENS", "8192"))
+    minimax_enabled: bool = bool(minimax_api_key)
+
     # ---- 登录令牌签名密钥（HMAC，生产请用 .env 覆盖）----
     auth_secret: str = _env("AUTH_SECRET", "campus-delivery-secret-2026")
 

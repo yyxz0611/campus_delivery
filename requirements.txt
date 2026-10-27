@@ -7,9 +7,14 @@ redis==6.2.0
 pillow==11.3.0
 numpy==2.3.2
 pymysql==1.2.3
-psycopg2-binary==2.9.13huaweicloudsdkcore==3.1.216
+psycopg2-binary==2.9.13
+huaweicloudsdkcore==3.1.216
 huaweicloudsdkiam==3.1.216
 huaweicloudsdkocr==3.1.216
 huaweicloudsdkrds==3.1.216
 huaweicloudsdkdcs==3.1.216
 huaweicloudsdkvpc==3.1.216
+langchain==1.4.6
+langchain-openai==1.7.2
+langgraph==1.2.16
+langgraph-checkpoint==4.3.0

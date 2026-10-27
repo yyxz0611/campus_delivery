@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from .config import settings
 from .database import SessionLocal, init_db
 from .redis_client import redis_client
-from .routers import anomalies, auth, balance, dispatch, notifications, orders, photos, tracking
+from .routers import anomalies, assistant, auth, balance, dispatch, notifications, orders, photos, tracking
 from .routers import admin as admin_router
 from .services import auth_service
 
@@ -44,6 +44,7 @@ app.include_router(dispatch.router)
 app.include_router(notifications.router)
 app.include_router(admin_router.router)
 app.include_router(balance.router)
+app.include_router(assistant.router)
 
 # 照片等静态资源（本地存储；生产可切换 OBS）
 app.mount("/static", StaticFiles(directory=str(settings.static_dir)), name="static")
