@@ -55,6 +55,8 @@ campus_delivery/
 
 ## 四、本地快速启动
 
+**运行环境**：Python 3.11 及以上（本项目在 Python 3.13 上开发与验证；ECS 部署使用 3.11.6），依赖见 `requirements.txt`。本地形态不需要 Node.js（前端为 CDN 引入的 Vue3，无构建步骤），也不需要任何云服务。
+
 ```bash
 cd campus_delivery
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
@@ -126,7 +128,8 @@ python scripts/provision.py wait <instance_id> --timeout 1800
    REDIS_URL=redis://:密码@内网地址:6379/0
    ```
 
-> 应用启动时自动 `create_all` 建表（订单/节点/照片/异常/车次/人力/订阅 7 张表）。
+> 应用启动时自动 `create_all` 建表（12 张表：用户 / 角色凭据 / 订单 / 配送节点 / 照片审核 / 异常 / 车次 / 人力 / 通知订阅 / 通知 / 用户通知状态 / 余额流水）。
+> 注意：`create_all` 只建新表、不给已有表补列；改动模型后需执行 `python scripts/align_schema.py`。
 > Redis 未配置或连接失败时自动降级为进程内缓存，服务不中断。
 
 ### 4. 容器化构建
