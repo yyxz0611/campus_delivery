@@ -12,8 +12,9 @@
 
 | 版本 | 核心形态 | 状态 |
 |---|---|---|
-| 2.0 | FastAPI + 规则驱动服务层（12 张表 / 9 路由 / 8 服务，按 `docs/design.md` 口径） | 已结项，已提交 GitHub（`7cc1b22`） |
-| **3.0** | 在 2.0 之上叠加 **LangGraph Supervisor 多 Agent 层**，LLM 负责意图理解与编排，确定性算法仍由原服务层承担 | 本文档描述的版本 |
+| 2.0 | FastAPI + 规则驱动服务层（12 张表 / 9 路由 / 8 服务，按 `docs/design.md` 口径） | 已结项，已提交 GitHub（原始基线已改写为 `28939e3`） |
+| **3.0** | 在 2.0 之上叠加 **LangGraph Supervisor 多 Agent 层**（异常应急 + 运营分析两个业务子 Agent），LLM 负责意图理解与编排，确定性算法仍由原服务层承担 | 本文档描述的版本 |
+| **3.1** | 运营分析并入 AI 助手对话（`ops_agent` + `ask_ops_metrics`），独立分析页签下线；补齐统一鉴权依赖与只读闸门 | 2026-10-28 增量，已包含在本文档 |
 
 ### 0.2 本文档的写作约束
 
@@ -25,21 +26,28 @@
 
 | 项 | 数值 | 统计方式 |
 |---|---|---|
-| 后端 Python 文件 | 45 个 | `app/` 下全部 `.py` |
-| 后端代码行数 | 4073 行 | 同上 |
-| 测试文件 / 代码行 | 4 个 / 641 行 | `tests/` |
-| 自动化测试用例 | **56 项**（可收集） | `pytest --collect-only` |
-| 前端资源 | `index.html` 37KB / `app.js` 35KB / `style.css` 16KB / `vue.global.prod.js` 147KB | `frontend/` |
+| 后端 Python 文件 | 52 个 | `app/` 下全部 `.py` |
+| 后端代码行数 | 5056 行 | 同上 |
+| 测试文件 / 代码行 | 11 个 / 1231 行 | `tests/` |
+| 自动化测试用例 | **147 项**（可收集） | `pytest --collect-only` |
+| 前端资源 | `index.html` 37KB / `app.js` 35KB / `style.css` 19KB / `vue.global.prod.js` 143KB | `frontend/` |
 
 测试用例分布：
 
 | 测试文件 | 用例数 | 覆盖对象 | 受限环境实测 |
 |---|---|---|---|
 | `tests/test_agents_graph.py` | 35 | Supervisor 路由三级降级、图结构、子 Agent 异常兜底 | 全部通过 |
+| `tests/test_ops_agent.py` | 8 | 运营子 Agent 路由判定、表格提取、错误载荷处理 | 全部通过 |
+| `tests/test_ops_semantic.py` | 10 | 语义层表/字段/枚举覆盖、中文列名与结论生成 | 全部通过 |
+| `tests/test_ops_sql_guard.py` | 39 | 只读闸门：语句类型、关键字、注释、白名单、强制 LIMIT | 全部通过 |
+| `tests/test_ops_query_service.py` | 9 | 查询执行与结果序列化、时间与数值类型处理 | 全部通过 |
+| `tests/test_ops_intent_guard.py` | 10 | 意图边界、拒答行为、删除类意图拦截 | 全部通过 |
+| `tests/test_ops_router.py` | 8 | 接口挂载、请求体 Schema、闸门错误码 | 全部通过 |
+| `tests/test_ops_auth.py` | 7 | 运营接口鉴权：无 token、伪造 token、角色不符、多角色放行 | 全部通过 |
 | `tests/test_assistant_sessions.py` | 13 | 会话按角色隔离、通知工具权限矩阵 | 全部通过 |
 | `tests/test_api.py` | 8 | 订单全链路、照片审核、异常闭环、调度、元信息 | **受限环境无法运行**（见下） |
 
-> **测试运行环境说明**：56 项中，`agents` 与 `sessions` 共 48 项直接调用函数与 LangGraph 图，可在任意环境运行，本次实测全绿。
+> **测试运行环境说明**：147 项中，除 `test_api.py` 的 8 项外共 139 项直接调用函数与 LangGraph 图，可在任意环境运行，本次实测全绿。
 > `test_api.py` 的 8 项依赖 `starlette.TestClient`，其内部需启动 anyio event loop（涉及本地 socket），在**禁用本地 socket 的受限运行环境**下会被系统拦截并报 `OSError: [WinError 10051]`，属环境限制而非代码缺陷；在允许本地 socket 的正常开发环境下该 8 项通过（2.0 阶段已验证 api 8 项全绿）。
 
 ---
@@ -58,7 +66,7 @@
 └───────────────────────────┬──────────────────────────────────┘
                             │ HTTP / JSON
 ┌───────────────────────────▼──────────────────────────────────┐
-│                  后端应用层（FastAPI，10 个路由模块）           │
+│                  后端应用层（FastAPI，11 个路由模块）           │
 │  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌───────────┐  │
 │  │ 业务路由   │ │  AI 助手   │ │  安全层    │ │  数据层   │  │
 │  │ orders     │ │ /api/      │ │ HMAC token │ │ SQLAlchemy│  │
@@ -68,8 +76,9 @@
 │  │ dispatch   │       │                                         │
 │  │ notifications│  ┌──▼────────────────────────────────────┐   │
 │  │ admin      │  │  ★ 智能体层（LangGraph，3.0 新增）      │   │
-│  │ balance    │  │  supervisor ──► anomaly_agent ──► finalize│  │
-│  │ auth       │  │   (Router)      (ReAct + 4 个工具)      │   │
+│  │ balance    │  │  supervisor ─► anomaly_agent ─► finalize│  │
+│  │ auth       │  │   (Router)     ops_agent ─────►          │  │
+│  │ ops ★新增  │  │   (ReAct，共 5 个业务工具)                │  │
 │  └────────────┘  │   └── contextvars 注入 db session/登录身份│  │
 │                   └──────┬──────────────────────────────────┘   │
 └──────────────────────────┼───────────────────────────────────────┘
@@ -103,10 +112,11 @@
 
 | 维度 | 2.0 | 3.0 | 变更性质 |
 |---|---|---|---|
-| 请求入口 | 9 个业务路由 | 10 个路由，新增 `/api/assistant/chat` | 新增 |
-| 智能编排 | 无（前端点按钮 → 后端规则执行） | LangGraph Supervisor 按自然语言意图路由 | **新增** |
+| 请求入口 | 9 个业务路由、45 个接口 | 11 个路由、47 个接口，新增 `/api/assistant/chat` 与 `/api/ops/ask`、`/api/ops/raw` | 新增 |
+| 智能编排 | 无（前端点按钮 → 后端规则执行） | LangGraph Supervisor 按自然语言意图路由至 2 个子 Agent | **新增** |
 | 业务能力实现位置 | 全部在 service 层 | **仍在 service 层**，LLM 只做理解与编排 | **不变**（关键原则） |
-| 工具调用安全 | HTTP 层鉴权 | 复用同一 HMAC token + 同一订单权限模型 | 复用 |
+| 运营统计 | 管理员手工翻列表 / 导 Excel 自算 | 语义层 + 指标口径 + 只读闸门，AI 助手对话内出表 | **新增** |
+| 工具调用安全 | HTTP 层鉴权 | 复用同一 HMAC token + 同一订单权限模型；新增统一鉴权依赖 `require_role` | 复用 + 补齐 |
 | 数据表 | 12 张 | 12 张（**未新增表**） | 不变 |
 | 部署依赖 | RDS/DCS/高德 | 同上 + 外部 LLM 端点（MiniMax） | 新增一项外部依赖 |
 
@@ -116,7 +126,7 @@
 
 ## 2. 模块设计
 
-### 2.1 路由模块（`app/routers/`，10 个）
+### 2.1 路由模块（`app/routers/`，11 个）
 
 | 模块 | 路由前缀 | 职责 | 3.0 变化 |
 |---|---|---|---|
@@ -130,16 +140,26 @@
 | `admin` | `/api/admin` | 管理员专属：人员管理、重置密码、解绑角色、关联订单 | — |
 | `balance` | `/api/balance` | 虚拟余额流水查询 / 充值 | — |
 | **`assistant`** | **`/api/assistant`** | **自然语言聊天入口，内部走 LangGraph Supervisor** | **3.0 新增** |
+| **`ops`** | **`/api/ops`** | **运营统计入口：`/ask` 自然语言取数、`/raw` 只读 SQL 调试（均仅管理员）** | **3.0 新增**
 
 `/api/assistant` 对外只有 1 个接口：
 
 | 方法 | 路径 | 请求体 | 响应 |
 |---|---|---|---|
-| POST | `/api/assistant/chat` | `{message: str, thread_id: str}` | `{reply: str, thread_id: str}` |
+| POST | `/api/assistant/chat` | `{message: str, thread_id: str}` | `{reply: str, thread_id: str, table: object \| null}` |
+
+`table` 字段仅在运营统计类回复中出现，结构为 `{summary, intent, columns, column_labels, rows, overview}`，由前端渲染为对话内表格。
 
 异常策略：任何内部错误都**降级为一条友好回复（HTTP 200）**，不把 500 堆栈抛给前端，真实原因写服务端日志。
 
-### 2.2 服务模块（`app/services/`，12 个）
+`/api/ops` 对外 2 个接口，均挂 `require_role("admin")`：
+
+| 方法 | 路径 | 请求体 | 说明 |
+|---|---|---|---|
+| POST | `/api/ops/ask` | `{question: str}` | 自然语言取数，返回 `{sql, columns, column_labels, rows, row_count, summary, overview, intent, elapsed_ms}`；范围外问题返回 400 并给出可问方向 |
+| POST | `/api/ops/raw` | `{sql: str}` | 直接执行 SQL，经只读闸门校验；违规返回 400 |
+
+### 2.2 服务模块（`app/services/`，15 个）
 
 | 模块 | 职责 | 关键依赖 |
 |---|---|---|
@@ -155,17 +175,22 @@
 | `risk_service` | 规则化配送风险打分（停留时长 / 超时 / 异常信号），输出可解释原因 | SQLAlchemy |
 | `email_service` | SMTP 发送验证码（QQ 邮箱 465 SSL） | smtplib |
 | `admin_service` | 人员列表/详情/重置密码/解绑角色/关联订单轨迹 | SQLAlchemy |
+| `ops_semantic` | 语义层：表/字段中文名、枚举全集、指标口径、结果列名映射、结论文案生成 | 无（纯数据定义） |
+| `ops_query_service` | 自然语言意图匹配 → 取 SQL → 过闸门 → 只读执行 → 结果整形（含 summary/overview） | `ops_sql_guard`, `ops_semantic` |
+| `ops_sql_guard` | 只读闸门：语句类型、关键字、注释、表白名单、强制 LIMIT | 无 |
 
-### 2.3 智能体层（`app/agents/`，3.0 新增，11 个 Python 文件）
+### 2.3 智能体层（`app/agents/`，3.0 新增，13 个 Python 文件）
 
-其中 8 个为实现文件，3 个为包初始化文件（`__init__.py`）。
+其中 10 个为实现文件，3 个为包初始化文件（`__init__.py`）。
 
 | 文件 | 职责 | 关键设计 |
 |---|---|---|
-| `graph.py` | LangGraph 图定义：supervisor → anomaly_agent → supervisor → finalize | 三级降级路由；懒加载单例；防来回打转 |
+| `graph.py` | LangGraph 图定义：supervisor → anomaly_agent / ops_agent → supervisor → finalize | 三级降级路由；懒加载单例；防来回打转 |
 | `agents/anomaly_agent.py` | 异常应急子 Agent（ReAct 循环） | 基于 `create_react_agent`；外层包异常兜底 |
+| `agents/ops_agent.py` | 运营分析子 Agent（ReAct 循环） | 调 `ask_ops_metrics` 取结构化表格；LLM 不可用时降级为直接调服务层，保证一定有结果 |
 | `tools/anomaly_tools.py` | 3 个工具：`query_order_log` / `report_anomaly` / `list_my_anomalies` | 工具内部复用 2.0 service 与权限模型 |
 | `tools/notification_tools.py` | 1 个工具：`send_notification` | 权限矩阵由代码强制，非由 prompt 约束 |
+| `tools/ops_tools.py` | 1 个工具：`ask_ops_metrics` | 非管理员直接返回「仅管理员可用」；工具只调服务层，不生成 SQL |
 | `llm.py` | 模型工厂：`get_llm(temperature=0.1)` | MiniMax 经 OpenAI 兼容端点接入 LangChain |
 | `context.py` | `contextvars` 传递 db session 与当前登录身份 | 工具在 LLM 调用链中仍能拿到身份 |
 | `prompts.py` | Supervisor 与子 Agent 的 system prompt 集中管理 | prompt 只约束表述与顺序，不承担安全 |
@@ -176,16 +201,18 @@
 ```python
 class AgentState(TypedDict, total=False):
     messages: Annotated[list, add_messages]   # 消息累积，add_messages 归约
-    next: str                                  # 下一跳：anomaly_agent / FINISH
+    next: str                                  # 下一跳：anomaly_agent / ops_agent / FINISH
     reply: str                                 # 给用户的一句话回复
     routed: bool                               # 本轮是否已路由（防打转）
+    table: dict                                # 运营统计的结构化表格（结论/列名/行/概览）
 ```
 
 **图结构**：
 
 ```
 START → supervisor ─┬─(next=anomaly_agent)→ anomaly_agent → supervisor
-                    └─(next=FINISH)────────→ finalize ───────→ END
+                    ├─(next=ops_agent)────→ ops_agent ────→ supervisor
+                    └─(next=FINISH)───────→ finalize ─────→ END
 ```
 
 - `supervisor` 在 `routed=True` 或本轮已有 AI 回复时直接返回 `FINISH`，避免 supervisor ↔ agent 互相打转；
@@ -413,15 +440,17 @@ POST /api/assistant/chat   {message, thread_id}
    ├─ ④ 上下文注入：set_context(db, current)  ← contextvars
    │      把 db session 与登录身份放进同步调用链
    │
-   ├─ ⑤ 图执行：graph.invoke({messages:[user], routed:False},
+├─ ⑤ 图执行：graph.invoke({messages:[user], routed:False, table:None},
    │                        config={configurable:{thread_id}})
-   │      supervisor → anomaly_agent → supervisor → finalize
+   │      supervisor → anomaly_agent / ops_agent → supervisor → finalize
    │
    ├─ ⑥ 回复提取：_extract_reply(messages)
-   │      取最后一条有内容 AI 消息，剥离 <think> 块
+   │      取最后一条有内容 AI 消息，剥离 thinking 块
    │
-   └─ ⑦ 返回 {reply, thread_id}
-          任何异常 → 兜底回复（HTTP 200），异常写日志
+   └─ ⑦ 返回 {reply, thread_id, table}
+           table 非空（运营统计）→ 前端在气泡下方渲染为表格
+           table 每轮入口重置为 None，避免上一轮表格残留
+           任何异常 → 兜底回复（HTTP 200），异常写日志
           finally: reset_context(tokens)
 ```
 
@@ -435,23 +464,30 @@ POST /api/assistant/chat   {message, thread_id}
             │
             ▼
 ② 模型输出 JSON 文本
-      └─ 清洗 <think> → 去 ``` 围栏 → loads_first_json 提取首个合法 JSON
+      └─ 清洗  thinking → 去 ``` 围栏 → loads_first_json 提取首个合法 JSON
             └─ 仍失败
                   │
                   ▼
 ③ 关键词规则兜底
-      命中异常/通知类关键词 → anomaly_agent
-      未命中              → FINISH（输出默认引导语）
+      命中运营统计特征词（23 个）        → ops_agent
+      否则命中异常/通知类关键词（41 个） → anomaly_agent
+      均未命中                          → FINISH（输出默认引导语）
 ```
 
 **路由决策 schema**（Pydantic `Router`）：
 
 | 字段 | 类型 | 约束 |
 |---|---|---|
-| `next` | `Literal["anomaly_agent", "FINISH"]` | 只允许两个取值 |
+| `next` | `Literal["anomaly_agent", "ops_agent", "FINISH"]` | 只允许三个取值 |
 | `reply` | `str` | 给用户看的一句话中文回复 |
 
-**关键词兜底表**（`ANOMALY_KEYWORDS`，共 30 个词，分两类）：
+**关键词兜底表**（两张表，共 64 个词）：
+
+**运营统计**（`OPS_KEYWORDS`，23 个，优先匹配）：
+
+`超时 / 迟到 / 未按时 / 按楼栋 / 各楼栋 / 哪个楼栋 / 楼栋分布 / 订单量 / 单量 / 订单数量 / 订单总数 / 多少单 / 异常类型 / 异常分布 / 异常状态 / 异常处理进度 / 订单状态 / 状态分布 / 占比 / 统计 / 汇总 / 排名 / 趋势`
+
+**异常与通知**（`ANOMALY_KEYWORDS`，41 个）：
 
 - 异常类：`丢失 / 丢单 / 丢了 / 丢件 / 不见 / 没收到 / 未收到 / 没有收到 / 没送到 / 未送达 / 没送达 / 未送到 / 没送 / 未送 / 送错 / 送错楼 / 送错楼栋 / 异常 / 投诉 / 餐品 / 洒了 / 餐洒 / 凉了 / 漏餐 / 错餐 / 缺餐 / 坏掉`
 - 通知类：`通知 / 发消息 / 发个消息 / 发信息 / 联系管理员 / 联系骑手 / 联系学生 / 告诉管理员 / 转告 / 催一下 / 催单 / 催个单 / 发个通知 / 留言`
@@ -489,7 +525,36 @@ anomaly_agent（ReAct 循环，create_react_agent）
 3. 补偿金额由平台规则决定，**Agent 不得擅自承诺具体数额**；
 4. 订单不存在或无权访问时如实告知，不假装成功。
 
-### 4.4 工具调用的权限校验（安全关键）
+### 4.4 运营分析 Agent 的取数流程
+
+```
+用户问「上周各楼栋超时订单数量」（管理员）
+   ├─ supervisor 路由 → ops_agent
+   │
+   ├─ ops_agent 调 tool: ask_ops_metrics(question)
+   │      ├─ 工具内校验身份：非 admin → 直接返回「仅管理员可用」
+   │      ├─ ops_query_service.ask(question)
+   │      │     ├─ 意图匹配（5 类模板）→ 命中则取预置 SQL
+   │      │     │     └─ 未命中 → 抛 UnsupportedQuestion（明确拒答，不猜）
+   │      │     ├─ ops_sql_guard.validate_sql（只读 / 白名单 / LIMIT / 禁注释）
+   │      │     └─ 只读执行 → 结果整形（summary / overview / column_labels）
+   │      └─ 返回 JSON 字符串
+   │
+   ├─ ops_agent 从 ToolMessage 解析出结构化表格 → 写入 state.table
+   └─ 回复：一句结论（前端在气泡下方渲染表格）
+```
+
+**降级路径**（`ops_agent` 的 `safe_ops_agent`）：模型不可用或本轮未触发工具时，
+直接调 `ops_query_service.ask()` 得到同样结构的结果——**不经过 LLM，仍能出表**。
+
+**设计约束**：运营子 Agent **不生成 SQL**。模型只负责把问题交给工具，
+取数由服务层按预置口径执行；因此「模型写错 SQL 把数据查错或删掉」这一类风险被结构性排除。
+
+**能力边界（如实说明）**：当前支持 5 类指标——各楼栋超时统计、异常类型分布、
+异常处理进度、各楼栋订单量、订单状态分布。范围外问题明确拒答并给出可问方向，
+不接 LLM 自由生成 SQL。
+
+### 4.5 工具调用的权限校验（安全关键）
 
 工具函数不自行判断权限，而是**复用 2.0 的订单权限模型**（`app/agents/tools/anomaly_tools.py` 与 `notification_tools.py` 内各有一份同构实现）：
 
@@ -501,7 +566,7 @@ anomaly_agent（ReAct 循环，create_react_agent）
 
 身份来自 `contextvars`（`get_current_user()`），即 FastAPI 注入的同一个 token 解析结果——**Agent 不存在提权路径**。
 
-### 4.5 通知工具的权限矩阵
+### 4.6 通知工具的权限矩阵
 
 `send_notification(target, title, content, order_no="")` 的目标支持：
 
@@ -515,7 +580,7 @@ anomaly_agent（ReAct 循环，create_react_agent）
 
 填写 `order_no` 时额外校验订单访问权，无权则**不发送**并如实返回。
 
-### 4.6 保留的 2.0 核心流程
+### 4.7 保留的 2.0 核心流程
 
 3.0 未改动以下流程的算法与实现，仅在自然语言入口下被 Agent 调用：
 
@@ -586,7 +651,7 @@ OCR 调用异常 → 自动回退为纯质量审核，不阻断主流程
 | 云数据库 | 华为云 RDS MySQL（pymysql / psycopg2 二选一） | 托管、内网访问 |
 | 云 AI | 华为云 OCR | 通用文字识别校验单号/寝室号 |
 | 容器化 | Docker（python:3.13-slim）+ systemd | 镜像可移植 + 守护进程 |
-| 测试 | pytest | 56 项用例 |
+| 测试 | pytest | 147 项用例 |
 
 **为什么用 LangGraph 而不是裸 LangChain AgentExecutor**：需要「主调度 → 子 Agent → 回主调度 → 收尾」的可控多跳结构、每轮重置路由状态、以及按 `thread_id` 隔离的多轮记忆，这三点用状态图实现比 AgentExecutor 直接。
 
@@ -625,6 +690,7 @@ OCR 调用异常 → 自动回退为纯质量审核，不阻断主流程
 | SMTP 邮箱授权码 | 存在于配置文件 | 移入环境变量并轮换，不入库不进包 |
 | `MINIMAX_API_KEY` | 仅在 `.env` | 保持不入库；生产建议加网关限流与调用配额 |
 | 会话记忆持久化 | 内存态，重启丢失 | 生产切 `RedisSaver` 后可做审计留痕 |
+| `admin` 路由鉴权 | 6 个接口仍只挂 `get_db`，未统一收口；新增的 `require_role` 目前只挂在 `/api/ops` 上 | 已具备统一依赖，收口动作待完成 | 将 `require_role("admin")` 挂到 admin 路由全部接口，并补「无 token 401 / 角色不符 403」反向用例 |
 
 ---
 
@@ -690,14 +756,15 @@ curl -s http://127.0.0.1:8000/api/meta
 
 | 指标 | 数值 | 口径 |
 |---|---|---|
-| 后端规模 | 45 个 Python 文件 / 4073 行 | `app/` |
-| 自动化测试 | **56 项可收集**；受限环境下实测 48 项通过（agents 35 + sessions 13），api 8 项因环境禁用本地 socket 无法启动 TestClient | `pytest --collect-only` / `pytest -q` |
-| 路由模块 | 10 个 | `app/routers/` |
-| 业务接口 | 45 个（另加 `/api/meta`、`/health`） | 见附录 A |
-| 服务模块 | 12 个 | `app/services/` |
+| 后端规模 | 52 个 Python 文件 / 5056 行 | `app/` |
+| 自动化测试 | **147 项可收集**；受限环境下实测 139 项通过，`test_api.py` 8 项因环境禁用本地 socket 无法启动 TestClient | `pytest --collect-only` / `pytest -q` |
+| 路由模块 | 11 个 | `app/routers/` |
+| 业务接口 | 47 个（另加 `/api/meta`、`/health`） | 见附录 A |
+| 服务模块 | 15 个 | `app/services/` |
 | 数据表 | 12 张 | SQLAlchemy ORM |
 | 前端 Tab | 13 个定义，按角色过滤可见 | `frontend/index.html` |
-| Agent 工具 | 4 个 | 3 异常类 + 1 通知类 |
+| Agent 工具 | 5 个 | 3 异常类 + 1 通知类 + 1 运营类 |
+| 运营可答指标 | 5 类 | `ops_query_service.QUESTION_PATTERNS` |
 | 路由降级层数 | 3 级（function calling → JSON 文本 → 关键词） | `app/agents/graph.py` |
 | 会话隔离维度 | 2 维（user_id × role） | `resolve_thread_id` |
 
@@ -729,26 +796,42 @@ campus_delivery/
 │   │   ├── prompts.py                   system prompt 集中管理
 │   │   ├── text_utils.py                <think> 剥离 + JSON 提取
 │   │   ├── agents/anomaly_agent.py      异常应急 ReAct 子 Agent
+│   │   ├── agents/ops_agent.py          运营分析 ReAct 子 Agent（出结构化表格）
 │   │   └── tools/
 │   │       ├── anomaly_tools.py         query_order_log / report_anomaly / list_my_anomalies
-│   │       └── notification_tools.py    send_notification
+│   │       ├── notification_tools.py    send_notification
+│   │       └── ops_tools.py             ask_ops_metrics（仅管理员）
 │   ├── routers/
-│   │   └── assistant.py                 ★ 3.0 新增：/api/assistant/chat
-│   ├── services/                        12 个业务服务（3.0 未改动算法）
+│   │   ├── assistant.py                 ★ 3.0 新增：/api/assistant/chat
+│   │   └── ops.py                       ★ 3.0 新增：/api/ops/ask、/api/ops/raw
+│   ├── auth_deps.py                     ★ 统一鉴权依赖 require_role
+│   ├── services/                        15 个业务服务（含运营语义层/查询/只读闸门）
 │   ├── models.py                        12 张表（3.0 未新增）
 │   ├── security.py                      HMAC token
 │   ├── config.py                        环境变量配置
 │   ├── redis_client.py                  DCS Redis + 进程内降级
 │   └── main.py                          应用装配 + /api/meta
-├── frontend/                            Vue3 单页（13 Tab）
+├── frontend/                            Vue3 单页（13 Tab，AI 助手内嵌表格）
 ├── tests/
 │   ├── test_agents_graph.py             35 项
+│   ├── test_ops_agent.py                8 项
+│   ├── test_ops_semantic.py             10 项
+│   ├── test_ops_sql_guard.py            39 项
+│   ├── test_ops_query_service.py        9 项
+│   ├── test_ops_intent_guard.py         10 项
+│   ├── test_ops_router.py               8 项
+│   ├── test_ops_auth.py                 7 项
 │   ├── test_assistant_sessions.py       13 项
 │   └── test_api.py                       8 项
+├── tools/
+│   ├── selfcheck.py                     五道闸门自检（语法/路由基线/表/敏感信息/SQL）
+│   ├── project_baseline.json            路由与表清单基线
+│   └── mcp_db/                          零依赖只读数据库 MCP（4 个工具）
 ├── scripts/
 │   ├── provision.py                     华为云 RDS/DCS 一键开通
-│   ├── check_assistant.py               AI 助手真实调用自测
-│   └── check_minimax_tools.py           function calling 兼容性校验
+│   └── align_schema.py                  表结构对齐（create_all 不补列）
+├── AGENTS.md                            工程上下文与变更纪律
+├── .codeartsdoer/skills/                三个可复用 Skill（语义层/闸门/鉴权审计）
 ├── docs/design.md                       2.0 设计文档（历史版本）
 └── docs/design-3.0.md                   本文档
 ```
@@ -763,7 +846,8 @@ campus_delivery/
 
 | 项 | 现状 | 影响 | 后续动作 |
 |---|---|---|---|
-| **业务子 Agent 数量** | 目前只有 `anomaly_agent` 一个真实业务子 Agent；`supervisor` 与 `finalize` 是编排节点 | 订单分拣、路径规划仍是确定性算法 + 前端按钮调用，未接入自然语言入口 | 新增分拣/调度 Agent 时沿用现有 tools + context 模式 |
+| **业务子 Agent 数量** | 已有 `anomaly_agent` 与 `ops_agent` 两个真实业务子 Agent；`supervisor` 与 `finalize` 是编排节点 | 订单分拣、路径规划仍是确定性算法 + 前端按钮调用，未接入自然语言入口 | 新增分拣/调度 Agent 时沿用现有 tools + context 模式 |
+| **运营统计覆盖面** | 只支持 5 类指标；范围外问题明确拒答并给出可问方向，不接 LLM 自由生成 SQL | 管理员问超出 5 类的问题时需要换一种问法或联系管理员 | 按需扩充 `QUESTION_PATTERNS`；LLM 兜底作为下一步评估项 |
 | **checkpoint 持久化** | `MemorySaver`，进程内多轮记忆，**重启即丢** | 服务器重启后对话上下文不保留 | 换 `langgraph.checkpoint.redis.RedisSaver`（DCS），无需改表 |
 | **OCR 校验** | 由 `HW_OCR_ENABLED` 控制，**可选挂载**；未启用时只做黑/花/模糊判定 | 默认部署下照片只验质量，不验单号/寝室号 | 生产开启并做好超时与降级监控 |
 | **高德 Key** | 未配置时降级为 haversine 直线距离 | 路线不再是真实路网，路线图上会出现直线段 | 生产配置 `AMAP_KEY` |
@@ -773,8 +857,8 @@ campus_delivery/
 
 ### 10.2 版本状态
 
-- 3.0 代码**尚未提交 Git**：当前分支 `main`，最后一次提交为 2.0 快照 `7cc1b22`；`app/agents/`、`app/routers/assistant.py`、`tests/test_agents_graph.py`、`tests/test_assistant_sessions.py` 均为未跟踪文件；
-- 建议提交前清理临时脚本与本地数据文件（`campus_delivery.db`、`test_tmp.db`、`.merkle-snapshot.json`、`.env`）。
+- 3.0 代码与运营分析模块**已提交 Git**：`main` 分支于 2026-10-27 完成初始基线提交（`28939e3`）与三次 3.0 增量提交（`9f0d307` / `0ed8b6d` / `c325e0b`），并已推送至公开仓库；
+- 工作区临时文件（`campus_delivery.db`、`test_tmp.db`、`.env`、过程脚本）已由 `.gitignore` 排除，未进入版本库。
 
 ### 10.3 下一期候选方向
 
@@ -834,6 +918,8 @@ campus_delivery/
 | GET | `/api/balance/transactions` | 余额流水 |
 | POST | `/api/balance/recharge` | 充值（管理员） |
 | **POST** | **`/api/assistant/chat`** | **★ 3.0：AI 助手对话** |
+| **POST** | **`/api/ops/ask`** | **★ 3.0：自然语言取运营统计（仅管理员）** |
+| **POST** | **`/api/ops/raw`** | **★ 3.0：只读 SQL 调试入口，经闸门校验（仅管理员）** |
 | GET | `/api/meta` | 云服务与运行状态 |
 | GET | `/health` | 健康检查 |
 
@@ -845,7 +931,8 @@ campus_delivery/
 | `report_anomaly` | `order_no: str`, `anomaly_type: str`（`lost` / `not_delivered`）, `description: str = ""` | JSON：异常 id / 状态 | 订单存在且有权；建议先调 `query_order_log` |
 | `list_my_anomalies` | 无 | JSON 数组：本人上报的异常 | 已登录 |
 | `send_notification` | `target: str`, `title: str`, `content: str`, `order_no: str = ""` | JSON：通知 id / 目标 / 是否发送 | 目标合法；定向用户仅 admin；`order_no` 需有权 |
+| `ask_ops_metrics` | `question: str` | JSON：`summary` / `intent` / `columns` / `column_labels` / `rows` / `overview`；失败返回 `error` | 当前身份必须是 admin；问题命中 5 类指标之一 |
 
 ---
 
-> 文档版本 v3.0（2026-10-26）　编制依据：`campus_delivery` 工作区代码实测统计　关联仓库：`https://github.com/yyxz0611/campus_delivery`
+> 文档版本 v3.1（2026-10-28）　编制依据：`campus_delivery` 工作区代码实测统计　关联仓库：`https://github.com/yyxz0611/campus_delivery`
