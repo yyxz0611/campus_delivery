@@ -35,6 +35,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     thread_id: str
+    table: dict | None = None
 
 
 def _extract_reply(messages: list) -> str:
@@ -88,11 +89,13 @@ def chat(payload: ChatRequest, x_auth_token: str | None = Header(None), db: Sess
                 "next": "FINISH",
                 "reply": "",
                 "routed": False,
+                "table": None,
             },
             config={"configurable": {"thread_id": thread_id}},
         )
         reply = _extract_reply(result.get("messages", []))
-        return ChatResponse(reply=reply, thread_id=thread_id)
+        table = result.get("table") or None
+        return ChatResponse(reply=reply, thread_id=thread_id, table=table)
     except Exception as e:  # noqa: BLE001 统一兜底，避免把内部堆栈暴露给前端
         logger.exception("AI 助手处理失败: %s", e)
         return ChatResponse(

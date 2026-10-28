@@ -28,6 +28,7 @@ from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
 from .agents.anomaly_agent import build_anomaly_agent
+from .agents.ops_agent import build_ops_agent
 from .llm import get_llm
 from .prompts import SUPERVISOR_PROMPT
 from .text_utils import loads_first_json, strip_think
@@ -39,12 +40,13 @@ class AgentState(TypedDict, total=False):
     next: str
     reply: str
     routed: bool
+    table: dict
 
 
 class Router(BaseModel):
     """主调度的路由决策（function calling 的工具 schema）。"""
 
-    next: Literal["anomaly_agent", "FINISH"] = Field(
+    next: Literal["anomaly_agent", "ops_agent", "FINISH"] = Field(
         description="下一个要处理本轮请求的子 Agent；无需子 Agent 时填 FINISH"
     )
     reply: str = Field(
@@ -53,7 +55,15 @@ class Router(BaseModel):
     )
 
 
-VALID_ROUTES = ("anomaly_agent", "FINISH")
+VALID_ROUTES = ("anomaly_agent", "ops_agent", "FINISH")
+
+# 关键词兜底：命中即认为属于运营统计，交给 ops_agent
+OPS_KEYWORDS = (
+    "超时", "迟到", "未按时", "按楼栋", "各楼栋", "哪个楼栋", "楼栋分布",
+    "订单量", "单量", "订单数量", "订单总数", "多少单",
+    "异常类型", "异常分布", "异常状态", "异常处理进度",
+    "订单状态", "状态分布", "占比", "统计", "汇总", "排名", "趋势",
+)
 
 # 关键词兜底：命中即认为属于配送异常，交给 anomaly_agent
 ANOMALY_KEYWORDS = (
@@ -160,8 +170,12 @@ def _parse_supervisor_output(content: str) -> tuple[str | None, str]:
 
 
 def _keyword_route(text: str) -> str:
-    """关键词兜底路由：命中异常关键词交给 anomaly_agent，否则 FINISH。"""
-    if text and any(k in text for k in ANOMALY_KEYWORDS):
+    """关键词兜底路由：先判运营统计特征词，再判异常关键词，否则 FINISH。"""
+    if not text:
+        return "FINISH"
+    if any(k in text for k in OPS_KEYWORDS):
+        return "ops_agent"
+    if any(k in text for k in ANOMALY_KEYWORDS):
         return "anomaly_agent"
     return "FINISH"
 
@@ -233,14 +247,20 @@ def build_graph():
     builder = StateGraph(AgentState)
     builder.add_node("supervisor", _make_supervisor(llm))
     builder.add_node("anomaly_agent", build_anomaly_agent())
+    builder.add_node("ops_agent", build_ops_agent())
     builder.add_node("finalize", _make_finalize())
     builder.add_edge(START, "supervisor")
     builder.add_conditional_edges(
         "supervisor",
         lambda state: state.get("next") or "FINISH",
-        {"anomaly_agent": "anomaly_agent", "FINISH": "finalize"},
+        {
+            "anomaly_agent": "anomaly_agent",
+            "ops_agent": "ops_agent",
+            "FINISH": "finalize",
+        },
     )
     builder.add_edge("anomaly_agent", "supervisor")
+    builder.add_edge("ops_agent", "supervisor")
     builder.add_edge("finalize", END)
     return builder.compile(checkpointer=MemorySaver())
 

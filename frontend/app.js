@@ -21,6 +21,7 @@ createApp({
         { id: 'dispatch', name: '统筹调度', icon: '🚚' },
         { id: 'notifications', name: '通知中心', icon: '🔔' },
         { id: 'assistant', name: 'AI 助手', icon: '🤖' },
+
         { id: 'profile', name: '个人中心', icon: '👤' },
       ],
       orderLabels,
@@ -89,6 +90,7 @@ createApp({
       balance: { transactions: [] },
 
       chat: { input: '', loading: false },
+
       // 每个角色一条独立会话：切换角色时互不干扰
       chats: {
         admin: { thread_id: '', messages: [] },
@@ -120,6 +122,7 @@ createApp({
     signupRoles() {
       return this.roles.filter(r => r.id !== 'admin');
     },
+
   },
 
   mounted() {
@@ -175,7 +178,8 @@ createApp({
         const r = await this.api('POST', '/api/assistant/chat', { message: text, thread_id: threadId });
         const reply = r && r.reply ? r.reply : (r && r.detail ? r.detail : '助手暂时无法响应，请稍后再试。');
         if (r && r.thread_id) c.thread_id = r.thread_id;
-        c.messages.push({ role: 'assistant', content: reply });
+        const table = r && r.table ? r.table : null;
+        c.messages.push({ role: 'assistant', content: reply, table });
       } catch (e) {
         c.messages.push({ role: 'assistant', content: '网络异常，请稍后再试。' });
       }
@@ -440,6 +444,7 @@ createApp({
       }
       return { detail: detail, status: r.status };
     },
+
 
     getLocation() {
       return new Promise((resolve) => {

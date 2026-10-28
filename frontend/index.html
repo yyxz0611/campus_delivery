@@ -669,6 +669,21 @@
               </div>
               <div v-for="(m, idx) in currentChat.messages" :key="idx" class="chat-msg" :class="m.role">
                 <div class="chat-bubble">{{ m.content }}</div>
+                <div v-if="m.table" class="chat-table">
+                  <div v-if="m.table.summary" class="chat-table-summary">{{ m.table.summary }}</div>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th v-for="(c, i) in m.table.columns" :key="c">{{ m.table.column_labels[i] || c }}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(row, r) in m.table.rows" :key="r">
+                        <td v-for="c in m.table.columns" :key="c">{{ row[c] }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
               </div>
               <div v-if="chat.loading" class="chat-msg assistant">
                 <div class="chat-bubble">正在思考...</div>
